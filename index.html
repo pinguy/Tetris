@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Tetris FX</title>
+  <style>
+    body { margin: 0; background: #000; overflow: hidden; }
+    canvas { display: block; }
+    #ui {
+      position: absolute; top: 10px; left: 10px; color: white;
+      font-family: monospace; z-index: 10;
+    }
+  </style>
+</head>
+
+<body>
+<canvas id="fireworks" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:5;"></canvas>
+
+<div id="ui">
+  <div>Score: <span id="score">0</span></div>
+  <div>Level: <span id="level">1</span></div>
+  <div>Lines: <span id="lines">0</span></div>
+  <div>Speed: <span id="speed">1x</span></div>
+  <div style="margin-top: 10px;">Next:</div>
+  <canvas id="preview" width="100" height="100" style="background:#111; margin-top:5px;"></canvas>
+</div>
+
+<audio id="bgm" src="Voicy_Tetris Theme - Trap Remix.mp3" loop></audio>
+<audio id="move" src="Tetris-block-move-sound-effect.mp3"></audio>
+<audio id="clear" src="Voicy_Next Level- Tetris Sounds.mp3"></audio>
+<audio id="gameover" src="Voicy_Game Over- Tetris Sounds.mp3"></audio>
+<audio id="levelup" src="Voicy_Next Level- Tetris Sounds.mp3"></audio>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.min.js"></script>
+<script>
+window.onload = () => {
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  document.body.appendChild(renderer.domElement);
+
+  const blockSize = 1;
+  const cols = 10, rows = 20;
+  const colors = [0xff3b3b, 0x3bff4a, 0x3b9bff, 0xffff3b, 0xff3bff, 0x3bffff];
+  const shapes = {
+    I: [[0,0], [1,0], [2,0], [3,0]],
+    O: [[0,0], [1,0], [0,1], [1,1]],
+    T: [[1,0], [0,1], [1,1], [2,1]],
+    L: [[0,0], [0,1], [0,2], [1,2]],
+    J: [[1,0], [1,1], [1,2], [0,2]],
+    S: [[1,0], [2,0], [0,1], [1,1]],
+    Z: [[0,0], [1,0], [1,1], [2,1]]
+  };
+
+  let eqBars = [];
+  function initEQBars() {
+    const barGeometry = new THREE.BoxGeometry(1.0, 1, 0.2);
+    for (let i = 0; i < cols; i++) {
+      const material = new THREE.MeshBasicMaterial({
+        color: 0xffffff,
+        transparent: true,
+        opacity: 0.4
+      });
+      const bar = new THREE.Mesh(barGeometry, material);
+      const x = (i + 0.0) * (cols / 9) - 0.5;
+      bar.position.set(x, rows / 2, -3);
+      scene.add(bar);
+      eqBars.push(bar);
+    }
+  }
+
+  const grid = Array.from({ length: rows }, () => Array(cols).fill(null));
+  const light = new THREE.DirectionalLight(0xffffff, 1);
+  light.position.set(2, 5, 10);
+  scene.add(light);
+  camera.position.set(cols / 2, rows / 2, 30);
+  camera.lookAt(cols / 2, rows / 2, 0);
+  initEQBars();
+
+  let score = 0,
+    previousLevel = 1, level = 1, linesCleared = 0;
+  
+  const BASE_DROP_INTERVAL = 30;
+  
+function calculateDropInterval(level) {
+  if (level <= 5) {
+    return Math.max(2, BASE_DROP_INTERVAL - ((level-1) * 1));
+  } else if (level <= 10) {
+    return Math.max(2, BASE_DROP_INTERVAL - 5 - ((level-5) * 2));
+  } else {
+    return Math.max(2, BASE_DROP_INTERVAL - 15 - ((level-10) * 3));
+  }
+}
+  
+  let dropInterval = calculateDropInterval(level);
+  let fastDropInterval = Math.max(2, Math.floor(dropInterval / 4));
+  
+  function updateScoreUI() {
+    document.getElementById('score').textContent = score;
+    document.getElementById('level').textContent = level;
+    document.getElementById('lines').textContent = linesCleared;
+    const speedMultiplier = (BASE_DROP_INTERVAL / dropInterval).toFixed(1);
+    document.getElementById('speed').textContent = speedMultiplier + 'x';
+  }
+
+  function addScore(lines) {
+    const points = [0, 40, 100, 300, 1200];
+    score += points[lines] * level;
+    linesCleared += lines;
+    
+    const newLevel = Math.floor(linesCleared / 10) + 1;
+if (newLevel > level) {
+  previousLevel = level;
+  level = newLevel;
+  
+  // Calculate new intervals based on new level
+  const newDropInterval = calculateDropInterval(level);
+  const newFastDropInterval = Math.max(2, Math.floor(newDropInterval / 4));
+  
+  // If in hard drop mode, update current (normal) drop interval separately
+  currentDropInterval = newDropInterval;
+  
+  // Then update the active interval depending on drop state
+  if (isHardDrop) {
+    dropInterval = newFastDropInterval;
+  } else {
+    dropInterval = newDropInterval;
+  }
+  
+  // Update fast drop interval
+  fastDropInterval = newFastDropInterval;
+  
+  document.getElementById('levelup').play();
+  showFireworks();
+  triggerCameraShake();
+  
+  console.log(`Level up! New level: ${level}, Drop interval: ${dropInterval}`);
+}
+    
+    updateScoreUI();
+    document.getElementById('clear').play();
+  }
+
+  function randomShape() {
+    const keys = Object.keys(shapes);
+    return keys[Math.floor(Math.random() * keys.length)];
+  }
+
+  function drawPreview(shapeName) {
+    const canvas = document.getElementById('preview');
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const shape = shapes[shapeName];
+    ctx.fillStyle = "#0f0";
+    shape.forEach(([x, y]) => {
+      ctx.fillRect(x * 20 + 10, y * 20 + 10, 18, 18);
+    });
+  }
+
+  let nextPieceName = randomShape();
+  function spawnNext() {
+    const shape = nextPieceName;
+    nextPieceName = randomShape();
+    drawPreview(nextPieceName);
+    return createTetromino(shape);
+  }
+
+  function createTetromino(name) {
+    const shape = shapes[name];
+    const color = colors[Math.floor(Math.random() * colors.length)];
+    const mat = new THREE.MeshStandardMaterial({ color });
+    const geo = new THREE.BoxGeometry(blockSize, blockSize, blockSize);
+    const group = new THREE.Group();
+    shape.forEach(([x, y]) => {
+      const cube = new THREE.Mesh(geo, mat);
+      cube.position.set(x, -y, 0);
+      group.add(cube);
+    });
+    group.position.set(4, rows - 1, 0);
+    return group;
+  }
+
+  let shakeTime = 0;
+  const particles = [];
+
+  function triggerCameraShake() {
+    shakeTime = 10;
+  }
+
+  function explodeParticlesAt(y) {
+    const geometry = new THREE.SphereGeometry(0.05, 4, 4);
+    const material = new THREE.MeshBasicMaterial({ color: 0xffffff });
+    for (let i = 0; i < 20; i++) {
+      const particle = new THREE.Mesh(geometry, material.clone());
+      particle.position.set(Math.random() * cols, y, Math.random() - 0.5);
+      particle.velocity = new THREE.Vector3(
+        (Math.random() - 0.5) * 0.5,
+        Math.random() * 0.5,
+        (Math.random() - 0.5) * 0.5
+      );
+      particle.tick = 30;
+      scene.add(particle);
+      particles.push(particle);
+    }
+  }
+
+  let current = spawnNext();
+  scene.add(current);
+
+  function canMove(dx, dy) {
+    current.updateMatrixWorld(true);
+    for (const cube of current.children) {
+      const pos = cube.getWorldPosition(new THREE.Vector3());
+      const x = Math.round(pos.x + dx);
+      const y = Math.round(pos.y + dy);
+      if (x < 0 || x >= cols || y < 0 || (y < rows && grid[y][x])) return false;
+    }
+    return true;
+  }
+
+  function lockCurrent() {
+    current.updateMatrixWorld(true);
+    for (const cube of current.children) {
+      const pos = cube.getWorldPosition(new THREE.Vector3());
+      const newCube = new THREE.Mesh(
+        new THREE.BoxGeometry(blockSize, blockSize, blockSize),
+        cube.material.clone()
+      );
+      newCube.position.copy(pos);
+      scene.add(newCube);
+      const x = Math.round(pos.x), y = Math.round(pos.y);
+      if (y >= 0 && y < rows && x >= 0 && x < cols) {
+        grid[y][x] = newCube;
+      }
+    }
+    scene.remove(current);
+    current = spawnNext();
+    scene.add(current);
+    if (!canMove(0, 0)) {
+      document.getElementById("gameover").play();
+      setTimeout(() => location.reload(), 1000);
+    }
+  }
+
+  function clearFullRows() {
+    let cleared = 0;
+    for (let y = 0; y < rows; y++) {
+      if (grid[y].every(cell => cell !== null)) {
+        for (let x = 0; x < cols; x++) {
+          const cube = grid[y][x];
+          if (cube) scene.remove(cube);
+          grid[y][x] = null;
+        }
+        explodeParticlesAt(y);
+        triggerCameraShake();
+        for (let yy = y; yy < rows - 1; yy++) {
+          for (let x = 0; x < cols; x++) {
+            grid[yy][x] = grid[yy + 1][x];
+            if (grid[yy][x]) grid[yy][x].position.y -= 1;
+          }
+        }
+        grid[rows - 1] = new Array(cols).fill(null);
+        y--;
+        cleared++;
+      }
+    }
+    if (cleared > 0) addScore(cleared);
+  }
+
+  function rotateTetromino() {
+    current.rotation.z -= Math.PI / 2;
+    if (!canMove(0, 0)) current.rotation.z += Math.PI / 2;
+  }
+
+  function moveTetromino(dx) {
+    current.position.x += dx;
+    if (!canMove(0, 0)) current.position.x -= dx;
+    else document.getElementById("move").play();
+  }
+
+  let isHardDrop = false;
+  let currentDropInterval = dropInterval;
+
+  function hardDrop() {
+    while(canMove(0, -1)) {
+      current.position.y -= 1;
+    }
+    lockCurrent();
+    clearFullRows();
+  }
+
+  document.addEventListener('keydown', e => {
+    if (e.key === 'ArrowLeft') moveTetromino(-1);
+    if (e.key === 'ArrowRight') moveTetromino(1);
+    if (e.key === 'ArrowUp') { rotateTetromino(); document.getElementById('move').play(); }
+    if (e.key === 'ArrowDown' && !isHardDrop) {
+      isHardDrop = true;
+      currentDropInterval = dropInterval;
+      dropInterval = fastDropInterval;
+    }
+    if (e.key === ' ') hardDrop();
+  });
+
+  document.addEventListener('keyup', e => {
+    if (e.key === 'ArrowDown' && isHardDrop) {
+      isHardDrop = false;
+      dropInterval = currentDropInterval;
+    }
+  });
+
+  updateScoreUI();
+
+  let dropCounter = 0;
+
+  function animate() {
+    requestAnimationFrame(animate);
+    dropCounter++;
+    if (dropCounter >= dropInterval) {
+      dropCounter = 0;
+      current.position.y -= 1;
+      if (!canMove(0, 0)) {
+        current.position.y += 1;
+        lockCurrent();
+        clearFullRows();
+      }
+    }
+
+    if (shakeTime > 0) {
+      camera.position.x += (Math.random() - 0.5) * 0.2;
+      camera.position.y += (Math.random() - 0.5) * 0.2;
+      shakeTime--;
+    }
+
+    for (let i = particles.length - 1; i >= 0; i--) {
+      let p = particles[i];
+      p.position.add(p.velocity);
+      p.tick--;
+      if (p.tick <= 0) {
+        scene.remove(p);
+        particles.splice(i, 1);
+      }
+    }
+
+    const t = Date.now() * 0.002;
+    for (let i = 0; i < eqBars.length; i++) {
+      const bar = eqBars[i];
+      const hue = (t * 20 + i * 36) % 360;
+      const scale = 3 + Math.sin(t + i) * 2.5;
+      bar.scale.y = scale;
+      bar.position.y = (rows / 2) - (scale / 2);
+      const color = new THREE.Color();
+      color.setHSL(hue / 360, 1, 0.5);
+      bar.material.color = color;
+    }
+
+    renderer.render(scene, camera);
+  }
+
+  let bgmStarted = false;
+  document.addEventListener('keydown', () => {
+    if (!bgmStarted) {
+      const bgm = document.getElementById("bgm");
+      if (bgm) {
+        bgm.volume = 0.3;
+        bgm.play().catch(e => console.log("Autoplay blocked:", e));
+      }
+      bgmStarted = true;
+    }
+  });
+
+  animate();
+};
+</script>
+
+<script>
+  const fwCanvas = document.getElementById('fireworks');
+  const fwCtx = fwCanvas.getContext('2d');
+  let particles = [];
+
+  function resizeFireworks() {
+    fwCanvas.width = window.innerWidth;
+    fwCanvas.height = window.innerHeight;
+  }
+  window.addEventListener('resize', resizeFireworks);
+  resizeFireworks();
+
+  function showFireworks() {
+    for (let i = 0; i < 50; i++) {
+      const x = Math.random() * fwCanvas.width;
+      const y = Math.random() * fwCanvas.height * 0.6;
+      const color = 'hsl(' + Math.random() * 360 + ',100%,60%)';
+      
+      for (let j = 0; j < 25; j++) {
+        particles.push({
+          x, y,
+          vx: (Math.random() - 0.5) * 7,
+          vy: (Math.random() - 0.5) * 7,
+          size: Math.random() * 3 + 1,
+          alpha: 1,
+          color
+        });
+      }
+    }
+  }
+
+  function updateFireworks() {
+    fwCtx.clearRect(0, 0, fwCanvas.width, fwCanvas.height);
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      fwCtx.globalAlpha = p.alpha;
+      fwCtx.fillStyle = p.color;
+      fwCtx.beginPath();
+      fwCtx.arc(p.x, p.y, p.size || 2, 0, Math.PI * 2);
+      fwCtx.fill();
+      
+      p.x += p.vx;
+      p.y += p.vy;
+      p.vy += 0.03;
+      
+      p.alpha -= 0.015;
+      
+      if (p.alpha <= 0) particles.splice(i, 1);
+    }
+    requestAnimationFrame(updateFireworks);
+  }
+  updateFireworks();
+</script>
+
+</body>
+</html>
